@@ -1,0 +1,266 @@
+openapi: 3.0.3
+info:
+  title: Юридический ассистент ПСБ — API
+  version: 0.1.0
+  description: |
+    Контракт между фронтендом и бэкендом. Меняется только через PR,
+    который одобрили все участники команды.
+
+servers:
+  - url: http://localhost:8000
+
+paths:
+  /health:
+    get:
+      summary: Проверка живости сервиса
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /api/chat:
+    post:
+      summary: Задать вопрос ассистенту
+      description: |
+        Каждый запрос независим: вся история диалога передаётся в теле.
+        Бот отвечает на последнюю реплику пользователя с учётом истории.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: Ответ ассистента (в том числе отказ или уточнение)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        "422":
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Внутренняя ошибка
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/documents:
+    get:
+      summary: Список документов базы знаний
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocumentMeta"
+
+  /api/documents/{doc_id}:
+    get:
+      summary: Документ целиком, разбитый на фрагменты
+      parameters:
+        - $ref: "#/components/parameters/DocId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "404":
+          description: Документ не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/documents/{doc_id}/fragments/{fragment_id}:
+    get:
+      summary: Один фрагмент (пункт, статья) с соседним контекстом
+      parameters:
+        - $ref: "#/components/parameters/DocId"
+        - name: fragment_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: context
+          in: query
+          description: Сколько соседних фрагментов вернуть до и после
+          schema: { type: integer, minimum: 0, maximum: 5, default: 1 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fragment: { $ref: "#/components/schemas/Fragment" }
+                  before:
+                    type: array
+                    items: { $ref: "#/components/schemas/Fragment" }
+                  after:
+                    type: array
+                    items: { $ref: "#/components/schemas/Fragment" }
+        "404":
+          description: Не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  parameters:
+    DocId:
+      name: doc_id
+      in: path
+      required: true
+      schema: { type: string }
+
+  schemas:
+    Message:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+
+    ChatRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          description: |
+            История диалога. Последний элемент всегда от user.
+            Бэкенд склеивает её в текст «Пользователь: … / Ассистент: …»
+            (так же устроены вопросы в questions.csv) и отдаёт в тот же
+            пайплайн, что и solution.py. Дата события, если она важна,
+            указывается прямо в тексте вопроса.
+          items: { $ref: "#/components/schemas/Message" }
+    ChatResponse:
+      type: object
+      required: [answer, status, citations]
+      properties:
+        answer:
+          type: string
+          description: |
+            Текст ответа. Ссылки на документ и пункт стоят прямо в тексте
+            (например, «договор № А-08/2024, п. 3.1»), как и в submission.csv.
+            Массив citations нужен только интерфейсу, чтобы открыть документ
+            и подсветить фрагмент.
+        status:
+          type: string
+          enum: [answered, refused, needs_clarification, out_of_scope]
+          description: |
+            answered — ответ найден в базе;
+            refused — данных недостаточно, отказ обоснован;
+            needs_clarification — нужен уточняющий вопрос (в одиночных кейсах
+              автопроверки не используется: там отвечаем по наиболее вероятной
+              трактовке и пишем, что изменится при другой);
+            out_of_scope — вопрос не по юридической тематике.
+        query_type:
+          type: string
+          description: Тип запроса, определённый классификатором (для отладки и UI).
+          enum:
+            - normal
+            - insufficient_info
+            - wrong_premise
+            - date_edition
+            - illegal_intent
+            - manipulation
+            - off_topic
+            - needs_clarification
+        citations:
+          type: array
+          items: { $ref: "#/components/schemas/Citation" }
+        missing_info:
+          type: array
+          items: { type: string }
+          description: Чего не хватает для ответа (заполняется при refused).
+        steps:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: Необязательный список шагов (например, по согласованию договора).
+        latency_ms:
+          type: integer
+          description: Время обработки запроса.
+
+    Citation:
+      type: object
+      required: [id, doc_id, fragment_id, doc_title, locator, quote]
+      properties:
+        id:
+          type: integer
+          description: Порядковый номер источника в списке под ответом
+        doc_id: { type: string }
+        fragment_id: { type: string }
+        doc_title: { type: string }
+        locator:
+          type: string
+          example: "ст. 11, п. 2"
+        quote:
+          type: string
+          description: Подтверждающий фрагмент текста дословно из базы.
+
+    DocumentMeta:
+      type: object
+      required: [doc_id, title]
+      properties:
+        doc_id: { type: string }
+        title: { type: string }
+        doc_type:
+          type: string
+          example: contract
+          description: Например, law, contract, regulation, amendment
+        edition_date:
+          type: string
+          format: date
+          nullable: true
+
+    Document:
+      allOf:
+        - $ref: "#/components/schemas/DocumentMeta"
+        - type: object
+          required: [fragments]
+          properties:
+            fragments:
+              type: array
+              items: { $ref: "#/components/schemas/Fragment" }
+
+    Fragment:
+      type: object
+      required: [fragment_id, doc_id, locator, text]
+      properties:
+        fragment_id: { type: string }
+        doc_id: { type: string }
+        locator: { type: string, example: "п. 3.2" }
+        breadcrumbs:
+          type: array
+          items: { type: string }
+          description: Путь от документа до фрагмента (раздел, статья, пункт).
+        text: { type: string }
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
