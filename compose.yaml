@@ -1,0 +1,52 @@
+services:
+  py-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: psb-py-worker
+    ports:
+      - "8001:8001"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - WORKER_PORT=8001
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/internal/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    restart: unless-stopped
+
+  backend-go:
+    build:
+      context: ./backend-go
+      dockerfile: Dockerfile
+    container_name: psb-backend-go
+    ports:
+      - "8000:8000"
+    depends_on:
+      py-worker:
+        condition: service_healthy
+    environment:
+      - PORT=:8000
+      - PY_WORKER_URL=http://py-worker:8001
+    restart: unless-stopped
+
+  # -------------------------------------------------------------
+  # Frontend (Role F - React / Vite / TypeScript)
+  # -------------------------------------------------------------
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: psb-frontend
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - backend-go
+  #   environment:
+  #     - VITE_API_URL=http://localhost:8000
+  #   restart: unless-stopped

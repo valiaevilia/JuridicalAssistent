@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -304,5 +305,61 @@ func TestChatWithMockPythonWorker(t *testing.T) {
 	}
 	if len(chatResp.Citations) != 1 || chatResp.Citations[0].FragmentID != "D1#3.1" {
 		t.Errorf("expected citation D1#3.1, got %+v", chatResp.Citations)
+	}
+}
+
+func TestSyncDocumentsFromWorker(t *testing.T) {
+	mockPyWorker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/documents" {
+			http.NotFound(w, r)
+			return
+		}
+
+		resp := map[string]interface{}{
+			"documents": []domain.Document{
+				{
+					DocID:   "D21",
+					Title:   "Федеральный закон № 152-ФЗ",
+					DocType: "law",
+					Fragments: []domain.Fragment{
+						{
+							FragmentID:  "D21#1",
+							DocID:       "D21",
+							Locator:     "ст. 1",
+							Breadcrumbs: []string{"Статья 1"},
+							Text:        "Сфера действия настоящего Федерального закона.",
+						},
+					},
+				},
+			},
+			"total": 1,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockPyWorker.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := storage.NewDocStore()
+	store.LoadDefaults()
+	wClient := worker.NewClient(mockPyWorker.URL, 5*time.Second, logger)
+
+	// До синка - дефолтные документы (D1, D2)
+	if !store.IsDefaultOnly() {
+		t.Fatalf("expected store to be default only initially")
+	}
+
+	// Синхронизируем напрямую
+	err := store.SyncFromWorker(context.Background(), wClient)
+	if err != nil {
+		t.Fatalf("SyncFromWorker failed: %v", err)
+	}
+
+	docs := store.GetDocuments()
+	if len(docs) != 1 || docs[0].DocID != "D21" {
+		t.Fatalf("expected 1 doc (D21) after sync, got %+v", docs)
+	}
+	if store.IsDefaultOnly() {
+		t.Fatalf("expected store not to be default only after syncing D21")
 	}
 }

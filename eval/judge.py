@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,7 @@ class TwoRoundJudge:
     def __init__(self, use_llm: bool = False, cache_path: Path | None = None) -> None:
         self.use_llm = use_llm
         self.cache_path = cache_path or CACHE_FILE
+        self._lock = threading.Lock()
         self._cache: dict[str, dict[str, Any]] = self._load_cache()
 
     def _load_cache(self) -> dict[str, dict[str, Any]]:
@@ -98,8 +100,10 @@ class TwoRoundJudge:
 
     def _save_cache(self) -> None:
         try:
+            with self._lock:
+                cache_copy = dict(self._cache)
             with self.cache_path.open("w", encoding="utf-8") as f:
-                json.dump(self._cache, f, ensure_ascii=False, indent=2)
+                json.dump(cache_copy, f, ensure_ascii=False, indent=2)
         except Exception as exc:
             logger.warning("Could not write judge cache: %s", exc)
 
@@ -246,8 +250,10 @@ class TwoRoundJudge:
         # Проверка кэша
         mode_tag = "llm" if self.use_llm else "heuristic"
         ckey = self._cache_key(case.id, baseline_ans, candidate_ans, mode_tag)
-        if ckey in self._cache:
-            cdata = self._cache[ckey]
+        with self._lock:
+            cached_val = self._cache.get(ckey)
+        if cached_val is not None:
+            cdata = cached_val
             return CaseEvaluation(
                 case_id=case.id,
                 category=case.category,
@@ -309,13 +315,14 @@ class TwoRoundJudge:
             mode_used = "heuristic"
 
         # Сохранение в кэш
-        self._cache[ckey] = {
-            "round1_score": r1_score,
-            "round2_score": r2_score,
-            "final_score": final_score,
-            "has_fabricated_fact": has_fab_llm,
-            "fabricated_reason": fab_reason,
-        }
+        with self._lock:
+            self._cache[ckey] = {
+                "round1_score": r1_score,
+                "round2_score": r2_score,
+                "final_score": final_score,
+                "has_fabricated_fact": has_fab_llm,
+                "fabricated_reason": fab_reason,
+            }
         self._save_cache()
 
         return CaseEvaluation(

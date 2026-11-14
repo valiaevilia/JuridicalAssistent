@@ -28,8 +28,20 @@ class InternalBridgeHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self) -> None:
-        if self.path == "/internal/health" or self.path == "/health":
+        if self.path in ("/internal/health", "/health"):
             self._send_json(HTTPStatus.OK, {"status": "ok", "worker": "python-core"})
+            return
+        if self.path == "/internal/documents":
+            kb = ensure_kb_initialized()
+            docs_map = kb.get("docs_map") or kb.get("docs", {})
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "docs_map": docs_map,
+                    "documents": list(docs_map.values()),
+                    "total": len(docs_map),
+                },
+            )
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"detail": "Endpoint not found"})
 

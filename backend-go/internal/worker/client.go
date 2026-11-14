@@ -163,3 +163,45 @@ func (c *Client) Ask(ctx context.Context, question string, resolver DocTitleReso
 		Steps:       []string{},
 	}, nil
 }
+
+// InternalDocsResponse описывает ответ от GET /internal/documents
+type InternalDocsResponse struct {
+	DocsMap   map[string]domain.Document `json:"docs_map"`
+	Documents []domain.Document          `json:"documents"`
+	Total     int                        `json:"total"`
+}
+
+// FetchDocuments загружает актуальные документы из Python-воркера
+func (c *Client) FetchDocuments(ctx context.Context) ([]domain.Document, error) {
+	url := fmt.Sprintf("%s/internal/documents", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create docs request failed: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch docs from worker failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("worker status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var res InternalDocsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, fmt.Errorf("decode docs response failed: %w", err)
+	}
+
+	if len(res.Documents) > 0 {
+		return res.Documents, nil
+	}
+
+	docs := make([]domain.Document, 0, len(res.DocsMap))
+	for _, d := range res.DocsMap {
+		docs = append(docs, d)
+	}
+	return docs, nil
+}

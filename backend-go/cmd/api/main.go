@@ -30,6 +30,16 @@ func main() {
 	}
 
 	wClient := worker.NewClient(cfg.PyWorkerURL, cfg.ClientTimeout, logger)
+
+	// Попытка синхронизации актуальных документов из Python-воркера
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := store.SyncFromWorker(syncCtx, wClient); err != nil {
+		logger.Info("Worker sync skipped at startup (will use local store or lazy sync)", "detail", err)
+	} else {
+		logger.Info("Successfully synchronized documents from Python worker at startup", "count", len(store.GetDocuments()))
+	}
+	syncCancel()
+
 	handler := httptransport.NewHandler(store, wClient, logger)
 	router := httptransport.NewRouter(handler, logger)
 

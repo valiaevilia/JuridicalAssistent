@@ -8,6 +8,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from eval.judge import TwoRoundJudge
 from eval.metrics import compute_run_summary
 from eval.schemas import CaseEvaluation, EvalCase

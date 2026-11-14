@@ -201,7 +201,16 @@ def test_python_worker_http():
         assert resp_h.status_code == 200
         assert resp_h.json()["status"] == "ok"
 
-        # 2. Answer question
+        # 2. Documents sync
+        resp_docs = httpx.get(f"http://127.0.0.1:{port}/internal/documents", timeout=5.0)
+        assert resp_docs.status_code == 200
+        docs_data = resp_docs.json()
+        assert "docs_map" in docs_data
+        assert "documents" in docs_data
+        assert docs_data["total"] >= 2
+        assert any(d["doc_id"] == "D1" for d in docs_data["documents"])
+
+        # 3. Answer question
         resp_ans = httpx.post(
             f"http://127.0.0.1:{port}/internal/answer",
             json={"question": "Какова ставка арендной платы склада в Химках?"},

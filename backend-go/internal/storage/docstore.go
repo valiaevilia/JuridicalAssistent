@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -330,4 +331,72 @@ func (ds *DocStore) SearchFallback(question string) *domain.ChatResponse {
 		MissingInfo: []string{"Необходимый нормативный документ отсутствует в базе знаний"},
 		Steps:       []string{},
 	}
+}
+
+// WorkerDocsFetcher интерфейс для получения документов из внешнего источника/воркера
+type WorkerDocsFetcher interface {
+	FetchDocuments(ctx context.Context) ([]domain.Document, error)
+}
+
+// UpdateFromDocuments потокобезопасно обновляет стор списком документов
+func (ds *DocStore) UpdateFromDocuments(docsList []domain.Document) {
+	if len(docsList) == 0 {
+		return
+	}
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+
+	ds.docs = make(map[string]domain.Document, len(docsList))
+	ds.metaList = make([]domain.DocumentMeta, 0, len(docsList))
+
+	for _, doc := range docsList {
+		if doc.Fragments == nil {
+			doc.Fragments = []domain.Fragment{}
+		}
+		for i := range doc.Fragments {
+			if doc.Fragments[i].Breadcrumbs == nil {
+				doc.Fragments[i].Breadcrumbs = []string{}
+			}
+		}
+		ds.docs[doc.DocID] = doc
+		ds.metaList = append(ds.metaList, domain.DocumentMeta{
+			DocID:       doc.DocID,
+			Title:       doc.Title,
+			DocType:     doc.DocType,
+			EditionDate: doc.EditionDate,
+		})
+	}
+}
+
+// IsDefaultOnly возвращает true, если в хранилище только дефолтные документы (или пусто)
+func (ds *DocStore) IsDefaultOnly() bool {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	if len(ds.docs) == 0 {
+		return true
+	}
+	if len(ds.docs) <= 2 {
+		_, hasD1 := ds.docs["D1"]
+		_, hasD2 := ds.docs["D2"]
+		if hasD1 || hasD2 {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncFromWorker синхронизирует документы из воркера
+func (ds *DocStore) SyncFromWorker(ctx context.Context, fetcher WorkerDocsFetcher) error {
+	if fetcher == nil {
+		return fmt.Errorf("fetcher is nil")
+	}
+	docs, err := fetcher.FetchDocuments(ctx)
+	if err != nil {
+		return fmt.Errorf("worker fetch documents failed: %w", err)
+	}
+	if len(docs) == 0 {
+		return fmt.Errorf("worker returned 0 documents")
+	}
+	ds.UpdateFromDocuments(docs)
+	return nil
 }

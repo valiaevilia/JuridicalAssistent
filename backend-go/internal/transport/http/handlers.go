@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -48,6 +49,14 @@ func (h *Handler) HealthHandler(w http.ResponseWriter, r *http.Request) {
 
 // GetDocumentsHandler обрабатывает GET /api/documents
 func (h *Handler) GetDocumentsHandler(w http.ResponseWriter, r *http.Request) {
+	if h.store.IsDefaultOnly() && h.worker != nil {
+		syncCtx, syncCancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+		if err := h.store.SyncFromWorker(syncCtx, h.worker); err == nil {
+			h.logger.Info("Synchronized documents from Python worker on demand", "count", len(h.store.GetDocuments()))
+		}
+		syncCancel()
+	}
+
 	docs := h.store.GetDocuments()
 	if docs == nil {
 		docs = []domain.DocumentMeta{}
