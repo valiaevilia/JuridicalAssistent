@@ -12,6 +12,9 @@ services:
     environment:
       - WORKER_PORT=8001
       - PYTHONUNBUFFERED=1
+      - DATA_DIR=/app/data
+    volumes:
+      - "${DATA_DIR:-./data}:/app/data:ro"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/internal/health')"]
       interval: 5s
@@ -35,18 +38,13 @@ services:
       - PY_WORKER_URL=http://py-worker:8001
     restart: unless-stopped
 
-  # -------------------------------------------------------------
-  # Frontend (Role F - React / Vite / TypeScript)
-  # -------------------------------------------------------------
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile
-  #   container_name: psb-frontend
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - backend-go
-  #   environment:
-  #     - VITE_API_URL=http://localhost:8000
-  #   restart: unless-stopped
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: psb-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend-go
+    restart: unless-stopped

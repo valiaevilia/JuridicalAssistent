@@ -171,7 +171,7 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(parse_json_object('Ответ:\n{"status":"ok"} конец')['status'], 'ok')
 
     def test_invalid_json_and_schema(self):
-        for raw in ('{"status":', 'не JSON', '{"x":1,"x":2}', '{"x":NaN}', '{} {}', '<think>{}'): 
+        for raw in ('{"status":', 'не JSON', '{"x":1,"x":2}', '{"x":NaN}', '{} {}', '<think>{}'):
             with self.subTest(raw=raw), self.assertRaises(FormatError): parse_draft(raw)
         draft = draft_for([chunk()]); draft['claims'][0]['quote'] = 30
         with self.assertRaises(FormatError): parse_draft(json.dumps(draft))

@@ -8,6 +8,17 @@
 
 Высокопроизводительный интеллектуальный ассистент по нормативно-правовым актам и договорам банка. Решение объединяет промышленный **Go API Gateway** с микросекундной отдачей документов и **Python RAG Core** для глубокого юридического анализа, декомпозиции сложных многосоставных запросов и детерминированной защиты от галлюцинаций (Zero-Tolerance Hallucination Guard).
 
+В едином `main` доступны backend, retrieval, роль L и frontend. Рабочий путь:
+`pipeline.answer_question → answer.prepare_query → retrieve.retrieve → answer.answer`.
+Клиент B и роль L используют общий `schemas.LLMResult`; сериализация общих
+типов сохранена для Python-воркера и Go API.
+
+Для настоящих ответов нужны исходная база в `DATA_DIR` и настройки прокси LLM.
+Предзаданные ответы Python включаются только явно через `DEMO_MODE=true` и
+помечаются в тексте. Ошибки клиента и конфигурации не заменяются скрыто такими
+ответами. Совпадение цитат и самопроверка снижают риск ошибок, но не гарантируют
+безошибочность каждого юридического вывода. Подробности: [роль L](ROLE_L.md).
+
 ---
 
 ## 🏛️ Архитектура системы
@@ -57,10 +68,10 @@ flowchart TD
 
 ```bash
 # 1. Клонирование и переход в директорию
-git clone https://github.com/.../JuridicalAssistent.git
+git clone https://github.com/valiaevilia/JuridicalAssistent.git
 cd JuridicalAssistent
 
-# 2. Настройка переменных окружения (опционально, есть дефолтные значения)
+# 2. Настройка: заполнить LLM_BASE_URL/LLM_API_KEY и путь DATA_DIR
 cp .env.example .env
 
 # 3. Сборка и запуск контейнеров
@@ -68,6 +79,7 @@ docker compose up --build
 ```
 
 После старта доступны следующие сервисы и эндпоинты:
+- **Веб-интерфейс:** `http://localhost:3000`
 - **Go API Gateway:** `http://localhost:8000`
 - **Проверка здоровья:** `GET http://localhost:8000/health`
 - **Список документов:** `GET http://localhost:8000/api/documents`
@@ -92,16 +104,19 @@ curl -X POST http://localhost:8000/api/chat \
 
 ## ⚙️ Конфигурация окружения (`.env`)
 
-Все параметры имеют безопасные значения по умолчанию для автономной работы:
+Настройки прокси берутся из окружения. `dummy-key` — маркер отсутствия ключа,
+с ним настоящий ответ не генерируется. `DATA_DIR` указывает папку с
+`knowledge-base.zip` на хосте; Compose монтирует её в `/app/data` только для чтения.
 
 | Переменная | Описание | Значение по умолчанию |
 | :--- | :--- | :--- |
-| `LLM_BASE_URL` | URL OpenAI-совместимого эндпоинта LLM | `https://api.openai.com/v1` |
-| `LLM_API_KEY` | Токен доступа к LLM | `sk-mock-key-for-local-dev` |
-| `LLM_MODEL` | Основная модель генерации ответов | `gpt-4o-mini` |
-| `LLM_FALLBACK_MODEL` | Резервная быстрая модель при таймаутах | `gpt-3.5-turbo` |
-| `EMB_MODEL` | Модель векторных эмбеддингов | `text-embedding-3-small` |
-| `RERANKER_MODEL` | Модель кросс-энкодера реранкера | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| `LLM_BASE_URL` | URL OpenAI-совместимого прокси; требуется настроить | `http://localhost:8001/v1` |
+| `LLM_API_KEY` | Служебный ключ прокси | `dummy-key` (заглушка) |
+| `LLM_MODEL` | Основная модель генерации ответов | `deepseek/deepseek-v4.1-flash` |
+| `EMB_MODEL` | Модель векторных эмбеддингов | `baai/bge-m3` |
+| `RERANKER_MODEL` | Модель реранкера | `cohere/rerank-5-fast` |
+| `DATA_DIR` | Папка с исходной базой и вопросами | `data` |
+| `DEMO_MODE` | Явный режим предзаданных ответов Python | `false` |
 | `WORKER_PORT` | Внутренний порт Python-воркера | `8001` |
 | `PORT` | Порт Go API Gateway | `:8000` |
 | `PY_WORKER_URL` | URL связи Go-бэкенда с Python-воркером | `http://127.0.0.1:8001` (или `http://py-worker:8001` в Docker) |
@@ -117,10 +132,10 @@ curl -X POST http://localhost:8000/api/chat \
 - **Целевые файлы:** `kb_load.py`, `kb_parse.py`, `index.py`, `retrieve.py`, `dates.py`.
 - **Контракт:** Функция `init_kb()` в `kb_load.py` должна возвращать словарь `{"docs": {doc_id: {...}}}`. Go-сервер автоматически подхватит эти документы через `/internal/documents`!
 
-### 🧠 Роль L (LLM, Промпты, Guardrails) — ветка `feat/llm`
+### 🧠 Роль L (LLM, Промпты, Guardrails) — ветка `feature/role-l`
 - **Зона ответственности:** Системные промпты, классификация интентов, Zero-Tolerance фильтр запрещённых фактов, итоговая генерация ответов с цитатами.
 - **Целевые файлы:** `prompts.py`, `guard.py`, `answer.py`.
-- **Контракт:** Функция `generate_answer(question, chunks)` возвращает объект `AnswerResult` из `schemas.py`.
+- **Контракт:** `prepare_query(text, client=...) → QueryInfo`, затем `answer(qinfo, retrieval, client=...) → AnswerResult`. Pipeline B адаптирует даты R и переводит свой Unix-дедлайн в `time.monotonic()` для L. См. [ROLE_L.md](ROLE_L.md).
 
 ### 💻 Роль B (Backend / DevOps + Eval) — ветка `feat/backend`
 - **Зона ответственности:** Высокопроизводительный Go-сервер (`backend-go/`), валидация импортов, сборка ZIP для платформы (`tools/build_zip.py`), Docker Compose и система локального тестирования (`eval/`).
@@ -128,7 +143,7 @@ curl -X POST http://localhost:8000/api/chat \
 
 ### 🎨 Роль F (Frontend & Product) — ветка `feat/frontend`
 - **Зона ответственности:** Пользовательский интерфейс юридического чата на React/TypeScript: подсветка фрагментов документов, кликабельные цитаты, просмотр контекста до/после, индикаторы статуса ответа.
-- **Целевые файлы:** Папка `frontend/`. Для подключения к Docker Compose достаточно раскомментировать блок `frontend` в файле `compose.yaml`.
+- **Целевые файлы:** Папка `frontend/`. Сервис включён в Compose на порту 3000; nginx проксирует запросы в `backend-go:8000`. Идентификаторы фрагментов с `#` кодируются в URL.
 
 ---
 
@@ -137,7 +152,7 @@ curl -X POST http://localhost:8000/api/chat \
 ### 1. Проверка готовности интеграции с модулями команды (B5)
 Скрипт проверяет наличие модулей коллег R и L, их сигнатуры и прогоняет 3 контрольных E2E-теста:
 ```bash
-python tools/check_integration.py
+python -X utf8 tools/check_integration.py --offline
 ```
 
 ### 2. Проверка чистоты импортов ядра для сабмита на платформу
@@ -178,9 +193,26 @@ python eval/ablation.py --split dev
 ### 7. Модульные тесты
 ```bash
 # Тесты Python ядра и системы оценки
-python -m pytest -v
+python -X utf8 -m pytest -q
 
 # Тесты Go API Gateway
 cd backend-go
 go test -v ./...
+```
+
+Тесты R и объединённого pipeline используют оригинальную базу из `DATA_DIR`;
+pytest устанавливается только в среду разработки, а не добавляется к списку
+runtime-зависимостей платформы. В тестах сквозного пути HTTP-ответы модели
+задаются через `httpx.MockTransport`: настоящий API и платные запросы не нужны.
+
+Проверка frontend и независимое offline-демо L:
+
+```bash
+cd frontend
+npm ci
+npm run build
+npm run lint
+cd ..
+python -X utf8 -m examples.offline_demo
+docker compose config --quiet
 ```

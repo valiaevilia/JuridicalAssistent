@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,7 @@ def _parse_contract_clauses(doc_id: str, title: str, kind: str, text: str, meta:
     current_clause_num = ""
     current_clause_lines: list[str] = []
     preamble_lines: list[str] = []
+    requisites_lines: list[str] = []
     is_preamble = True
 
     clause_regex = re.compile(r"^(\d+\.\d+)\.?\s*(.*)$")
@@ -109,6 +111,7 @@ def _parse_contract_clauses(doc_id: str, title: str, kind: str, text: str, meta:
                 quarantined=False,
             ))
             current_clause_lines = []
+            current_clause_num = ""
 
     for line in lines:
         if not line:
@@ -135,9 +138,19 @@ def _parse_contract_clauses(doc_id: str, title: str, kind: str, text: str, meta:
             current_clause_lines.append(line)
         elif current_section and "подписи" in current_section.lower():
             # Реквизиты и подписи
-            current_clause_lines.append(line)
+            requisites_lines.append(line)
 
     flush_clause()
+
+    if requisites_lines:
+        r_text = "\n".join(requisites_lines)
+        chunks.append(Chunk(
+            chunk_id=f"{doc_id}#requisites", doc_id=doc_id, doc_title=title,
+            doc_kind=kind, locator="Реквизиты и подписи сторон",
+            breadcrumbs=[title, "Реквизиты и подписи сторон"], text=r_text,
+            index_text=normalize_index_text([title, "Реквизиты"], r_text),
+            edition=meta.get("edition"), valid_from=meta.get("valid_from"), valid_to=meta.get("valid_to"),
+        ))
 
     # Добавляем преамбулу как отдельный чанк
     if preamble_lines:
@@ -650,6 +663,24 @@ def parse_document(raw_doc: RawDoc) -> list[Chunk]:
         return chunks
 
 
+def unique_chunk_ids(chunks: list[Chunk]) -> list[Chunk]:
+    """Повторная нумерация вложенных частей не должна затирать источник по ID.
+
+    Первый идентификатор сохраняется, последующие получают стабильный суффикс
+    по порядку исходного документа. Тексты и нормативные локаторы не меняются.
+    """
+    used = set()
+    output = []
+    for chunk in chunks:
+        base, candidate, occurrence = chunk.chunk_id, chunk.chunk_id, 1
+        while candidate in used:
+            occurrence += 1
+            candidate = f"{base}~{occurrence}"
+        output.append(replace(chunk, chunk_id=candidate) if candidate != base else chunk)
+        used.add(candidate)
+    return output
+
+
 def parse_all_documents(raw_docs: list[RawDoc] | None = None) -> list[Chunk]:
     """Парсит все документы, сохраняет chunks.jsonl и возвращает список Chunk."""
     if raw_docs is None:
@@ -659,6 +690,8 @@ def parse_all_documents(raw_docs: list[RawDoc] | None = None) -> list[Chunk]:
     for doc in raw_docs:
         doc_chunks = parse_document(doc)
         all_chunks.extend(doc_chunks)
+
+    all_chunks = unique_chunk_ids(all_chunks)
 
     # Запись в chunks.jsonl в корень репозитория
     out_path = Path("chunks.jsonl")

@@ -24,7 +24,7 @@ export async function fetchDocuments(): Promise<DocumentMeta[]> {
 
 export async function fetchDocumentDetail(docId: string): Promise<DocumentDetail | null> {
   try {
-    const res = await fetch(`${BASE_URL}/api/documents/${docId}`);
+    const res = await fetch(`${BASE_URL}/api/documents/${encodeURIComponent(docId)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
@@ -39,7 +39,7 @@ export async function fetchFragment(docId: string, fragmentId: string, context =
   after: Fragment[];
 } | null> {
   try {
-    const res = await fetch(`${BASE_URL}/api/documents/${docId}/fragments/${fragmentId}?context=${context}`);
+    const res = await fetch(`${BASE_URL}/api/documents/${encodeURIComponent(docId)}/fragments/${encodeURIComponent(fragmentId)}?context=${context}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {

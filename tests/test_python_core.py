@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
 import pytest
 
 from config import cfg
+import pipeline
 from llm_client import ResilientLLMClient, clean_think_tags, extract_json_str
 from pipeline import answer_question, ensure_kb_initialized
 from schemas import AnswerResult, Chunk, QueryInfo, RetrievalResult
@@ -150,7 +152,12 @@ def test_llm_client_reranker_fallback_and_circuit_breaker():
         client.close()
 
 
-def test_pipeline_smart_stubs():
+@pytest.fixture
+def demo_pipeline(monkeypatch):
+    monkeypatch.setattr(pipeline, "cfg", replace(cfg, DEMO_MODE=True))
+
+
+def test_pipeline_smart_stubs(demo_pipeline):
     ensure_kb_initialized()
 
     # 1. Вопрос по аренде
@@ -176,7 +183,7 @@ def test_pipeline_smart_stubs():
     assert res_none.status == "refused"
 
 
-def test_pipeline_budget_guard():
+def test_pipeline_budget_guard(demo_pipeline):
     # Симулируем ситуацию, когда до дедлайна осталось 100 секунд (< 150 с)
     now = time.time()
     res_s8_skip = answer_question("Вопрос про аренду", deadline_ts=now + 100.0)
@@ -188,7 +195,7 @@ def test_pipeline_budget_guard():
     assert "emergency_stop" in res_emergency.warnings
 
 
-def test_python_worker_http():
+def test_python_worker_http(demo_pipeline):
     # Запускаем worker.py в отдельном потоке на свободном порту
     port = 8999
     server = ThreadingHTTPServer(("127.0.0.1", port), InternalBridgeHandler)

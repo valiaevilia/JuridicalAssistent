@@ -35,7 +35,10 @@ def run_checks(root_dir: Path) -> None:
     # 1. Проверка check_imports.py
     check_script = root_dir / "tools" / "check_imports.py"
     if check_script.is_file():
-        res = subprocess.run([sys.executable, str(check_script)], cwd=str(root_dir), capture_output=True, text=True)
+        res = subprocess.run(
+            [sys.executable, "-X", "utf8", str(check_script)], cwd=str(root_dir),
+            capture_output=True, text=True, encoding="utf-8",
+        )
         if res.returncode != 0:
             print(res.stderr, file=sys.stderr)
             raise RuntimeError("check_imports.py завершился с ошибкой. Сборка ZIP отменена.")

@@ -9,22 +9,14 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
 from config import cfg
+from schemas import LLMResult
 
 logger = logging.getLogger("llm_client")
-
-
-@dataclass
-class LLMResult:
-    text: str
-    finish_reason: str = "stop"
-    usage: dict[str, Any] = field(default_factory=dict)
-    raw_response: dict[str, Any] = field(default_factory=dict)
 
 
 def clean_think_tags(text: str) -> str:
@@ -147,6 +139,18 @@ class ResilientLLMClient:
         temp = cfg.TEMPERATURE if temperature is None else temperature
         tokens = cfg.MAX_TOKENS if max_tokens is None else max_tokens
         req_timeout = cfg.HTTP_TIMEOUT_SEC if timeout is None else timeout
+        deadline = time.monotonic() + req_timeout
+
+        def remaining() -> float:
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise TimeoutError("Chat completion exceeded its operation timeout")
+            return value
+
+        def pause(delay: float) -> None:
+            if delay >= remaining():
+                raise TimeoutError("Insufficient time for a chat retry")
+            time.sleep(delay)
 
         payload: dict[str, Any] = {
             "model": cfg.LLM_MODEL,
@@ -165,8 +169,13 @@ class ResilientLLMClient:
 
         for attempt in range(cfg.MAX_RETRIES + 1):
             try:
-                with self._sem:
-                    resp = self._client.post(url, json=payload, headers=headers, timeout=req_timeout)
+                if not self._sem.acquire(timeout=remaining()):
+                    raise TimeoutError("Chat concurrency wait exceeded timeout")
+                try:
+                    resp = self._client.post(url, json=payload, headers=headers, timeout=remaining())
+                finally:
+                    self._sem.release()
+                remaining()
 
                 if resp.status_code == 400 and json_mode and "response_format" in resp.text:
                     # Некоторые прокси не поддерживают response_format -> повторяем без него
@@ -176,7 +185,7 @@ class ResilientLLMClient:
                 if resp.status_code in self.RETRYABLE_STATUSES:
                     if attempt < cfg.MAX_RETRIES:
                         wait = self._parse_retry_after(resp) or (0.5 * (2**attempt) + random.uniform(0.1, 0.4))
-                        time.sleep(wait)
+                        pause(wait)
                         continue
                     resp.raise_for_status()
 
@@ -186,12 +195,7 @@ class ResilientLLMClient:
                 content = choice.get("message", {}).get("content", "") or ""
                 finish_reason = choice.get("finish_reason", "stop")
 
-                # Проверка на обрезку длины: при finish_reason == "length" удваиваем max_tokens (до 8192)
-                if finish_reason == "length" and tokens < 8192 and attempt < cfg.MAX_RETRIES:
-                    tokens = min(8192, tokens * 2)
-                    payload["max_tokens"] = tokens
-                    continue
-
+                # Семантическими повторами и лимитом JSON управляет роль L.
                 cleaned_text = clean_think_tags(content)
                 return LLMResult(
                     text=cleaned_text,
@@ -203,7 +207,7 @@ class ResilientLLMClient:
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 if attempt < cfg.MAX_RETRIES:
                     wait = 0.5 * (2**attempt) + random.uniform(0.1, 0.4)
-                    time.sleep(wait)
+                    pause(wait)
                     continue
                 raise RuntimeError(f"Chat completion failed after {attempt} retries: {exc}") from exc
 

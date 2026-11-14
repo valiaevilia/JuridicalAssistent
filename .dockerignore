@@ -16,3 +16,5 @@ backend-go/*.exe
 backend-go/server
 backend-go/api
 *.tmp
+frontend/node_modules
+frontend/dist

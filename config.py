@@ -44,6 +44,8 @@ class Config:
     DATA_DIR: Path = Path(env("DATA_DIR", "data"))
     SUBMISSION_PATH: Path = Path(env("SUBMISSION_PATH", "submission.csv"))
     DOCS_JSON_PATH: Path = Path(env("DOCS_JSON_PATH", "docs.json"))
+    # Предзаданные ответы доступны только при явном включении демонстрации.
+    DEMO_MODE: bool = env("DEMO_MODE", "false").lower() in {"1", "true"}
 
     # Сетевые адреса и ключи
     LLM_BASE_URL: str = (

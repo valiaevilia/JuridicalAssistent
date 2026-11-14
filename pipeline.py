@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
+import threading
 import time
+from dataclasses import replace
 from typing import Any
 
-from config import cfg
-from schemas import AnswerResult, Chunk, QueryInfo, RetrievalResult
+from config import LConfig, cfg, load_config
+from schemas import AnswerResult, ConfigurationError
 
 logger = logging.getLogger("pipeline")
 
 # Глобальный реестр загруженной базы знаний
 _KB_CACHE: dict[str, Any] | None = None
+_KB_LOCK = threading.Lock()
 
 # Встроенные дефолтные документы для автономной работы и экспорта в docs.json
 DEFAULT_DOCS: dict[str, dict[str, Any]] = {
@@ -87,42 +89,26 @@ def _export_docs_json_if_needed(docs_map: dict[str, dict[str, Any]]) -> None:
 
 
 def ensure_kb_initialized() -> dict[str, Any]:
-    """Инициализирует базу знаний.
-
-    При наличии модулей R загружает реальные файлы; иначе использует
-    смарт-стабы и гарантирует наличие docs.json на диске.
-    """
+    """Загружает исходную базу R один раз; образцы разрешены только в DEMO_MODE."""
     global _KB_CACHE
-    if _KB_CACHE is not None:
+    if _KB_CACHE is not None and (not _KB_CACHE.get("demo") or cfg.DEMO_MODE):
         return _KB_CACHE
-
-    docs_map: dict[str, dict[str, Any]] = dict(DEFAULT_DOCS)
-
-    # Пробуем динамически загрузить модуль R (kb_load)
-    try:
-        import importlib
-        kb_load = importlib.import_module("kb_load")
-        if hasattr(kb_load, "init_kb"):
-            loaded_kb = kb_load.init_kb()
-            if isinstance(loaded_kb, dict) and "docs" in loaded_kb:
-                docs_map = loaded_kb["docs"]
-                logger.info("Real KB initialized from kb_load")
-    except (ImportError, ModuleNotFoundError):
-        pass
-    except Exception as exc:
-        logger.warning("Error initializing kb_load: %s; using default docs", exc)
-
-    _export_docs_json_if_needed(docs_map)
-
-    _KB_CACHE = {
-        "docs": docs_map,
-        "initialized_at": time.time(),
-    }
-    return _KB_CACHE
+    with _KB_LOCK:
+        if _KB_CACHE is not None and (not _KB_CACHE.get("demo") or cfg.DEMO_MODE):
+            return _KB_CACHE
+        from kb_load import init_kb
+        loaded = init_kb()
+        if not loaded.get("docs"):
+            if not cfg.DEMO_MODE:
+                raise FileNotFoundError("База знаний не найдена; задайте DATA_DIR")
+            loaded = {"docs": dict(DEFAULT_DOCS), "chunks": [], "demo": True}
+        _export_docs_json_if_needed(loaded["docs"])
+        _KB_CACHE = {**loaded, "initialized_at": time.time()}
+        return _KB_CACHE
 
 
 def _smart_stub_answer(question: str) -> AnswerResult:
-    """Встроенный смарт-стаб для автономной работы до слияния веток R и L."""
+    """Предзаданные примеры, доступные только при явном DEMO_MODE=true."""
     q_lower = question.lower()
 
     # 1. Аренда склада в Химках (D1)
@@ -238,19 +224,30 @@ def _trim_to_hard_limit(text: str, limit: int) -> str:
     return truncated.strip() + "..."
 
 
-def answer_question(question_text: str, deadline_ts: float | None = None) -> AnswerResult:
-    """Единая точка входа для обработки вопроса.
+def _extract_date_hints(text: str) -> list[dict]:
+    """Адаптирует DateExtractionResult роли R к контракту S1 без потери точности."""
+    from dates import extract_dates
+    from guard import CONTRACT_PATTERN
+    # Год внутри номера договора не является датой события.
+    extracted = extract_dates(CONTRACT_PATTERN.sub("", text))
+    if extracted.precision in ("none", "current") or not extracted.raw_match:
+        return []
+    lo, hi = extracted.as_of_range or (extracted.as_of, extracted.as_of)
+    return [{"text": extracted.raw_match.strip(), "iso_from": lo, "iso_to": hi,
+             "role": "signing" if any(w in text.lower() for w in ("одобр", "согласован")) else "event"}]
 
-    Используется и в solution.py, и в worker.py (для Go-бэкенда).
+
+def answer_question(question_text: str, deadline_ts: float | None = None, *,
+                    client=None, config: LConfig | None = None) -> AnswerResult:
+    """Единый R→L pipeline для CSV и worker. deadline_ts — Unix-время B.
+
+    На границе L оно переводится в time.monotonic(); client/config внедряются
+    для offline-проверок того же пути без сетевых запросов.
     """
     start_t = time.time()
-    ensure_kb_initialized()
-
-    # 1. Budget Guard: проверка оставшегося времени
     skip_s8 = False
     if deadline_ts is not None:
         remaining_time = deadline_ts - time.time()
-        # Экстренный останов: если времени меньше 25 секунд на весь остаток вопросов
         if remaining_time < cfg.EMERGENCY_STOP_REMAINING_SEC:
             return AnswerResult(
                 text="Время обработки ограничено тайм-бюджетом платформы. Сформировать ответ не удалось.",
@@ -261,51 +258,46 @@ def answer_question(question_text: str, deadline_ts: float | None = None) -> Ans
                 warnings=["emergency_stop"],
                 debug={"latency_sec": round(time.time() - start_t, 3)},
             )
-        # Пропуск глубокой самопроверки S8 при подходе к лимиту (< 150 с)
         if remaining_time < cfg.S8_SKIP_REMAINING_SEC:
             skip_s8 = True
 
     try:
-        # 2. Попытка вызвать реальные модули R и L
-        answer_res: AnswerResult | None = None
-        try:
-            import importlib
-            answer = importlib.import_module("answer")
-            retrieve = importlib.import_module("retrieve")
-
-            # Если модули R и L присутствуют в ветке, вызываем их сквозной пайплайн
-            if hasattr(retrieve, "retrieve") and hasattr(answer, "generate_and_verify"):
-                qinfo = (
-                    answer.preprocess_query(question_text)
-                    if hasattr(answer, "preprocess_query")
-                    else QueryInfo(original=question_text, last_user=question_text)
-                )
-                retrieval = retrieve.retrieve(qinfo)
-                answer_res = answer.generate_and_verify(qinfo, retrieval, skip_self_check=skip_s8)
-        except (ImportError, ModuleNotFoundError):
-            pass
-        except Exception as exc:
-            logger.warning("Pipeline R/L execution error: %s; falling back to stub", exc)
-
-        # 3. Если реальные модули недоступны или вернули None -> смарт-стаб
-        if answer_res is None:
+        limits = config or load_config()
+        limits = replace(limits, s8_enabled=limits.s8_enabled and not skip_s8,
+                         answer_hard_limit=min(limits.answer_hard_limit, cfg.ANSWER_HARD_LIMIT))
+        remaining = min(limits.q_budget_sec, cfg.PER_QUESTION_TIMEOUT_SEC)
+        if deadline_ts is not None:
+            remaining = min(remaining, deadline_ts - time.time())
+        deadline = time.monotonic() + remaining
+        ensure_kb_initialized()
+        if cfg.DEMO_MODE:
             answer_res = _smart_stub_answer(question_text)
-
-        # 4. Финализация длины ответа
-        answer_res.text = _trim_to_hard_limit(answer_res.text, cfg.ANSWER_HARD_LIMIT)
+            answer_res.text = _trim_to_hard_limit("Демонстрационный режим. " + answer_res.text, limits.answer_hard_limit)
+            answer_res.warnings.append("demo_mode")
+        else:
+            from answer import answer, prepare_query
+            from retrieve import detect_entities, retrieve
+            if client is None:
+                if not cfg.LLM_API_KEY or cfg.LLM_API_KEY == "dummy-key":
+                    raise ConfigurationError("Настройте клиент B через LLM_API_KEY")
+                from llm_client import llm_client
+                client = llm_client
+            qinfo = prepare_query(question_text, client=client, config=limits, deadline=deadline,
+                                  entity_detector=detect_entities, date_extractor=_extract_date_hints)
+            retrieval = retrieve(qinfo)
+            answer_res = answer(qinfo, retrieval, deadline, client=client, config=limits)
         answer_res.debug["latency_sec"] = round(time.time() - start_t, 3)
         answer_res.debug["skip_s8"] = skip_s8
         return answer_res
-
     except Exception as exc:
-        # Гарантированный fail-safe: никогда не ронять процесс необработанным исключением
-        logger.error("Unhandled exception in answer_question: %s", exc, exc_info=True)
+        # Сбой интеграции или конфигурации не маскируется ответом из заглушки.
+        logger.error("answer_question failed: %s", type(exc).__name__)
         return AnswerResult(
-            text="В базе знаний не найдено достаточных оснований для ответа на данный вопрос.",
+            text="Не удалось сформировать проверенный ответ из-за технической ошибки или настройки сервиса. Это не означает отсутствия сведений в базе.",
             status="refused",
             query_type="insufficient_info",
             claims=[],
-            missing=["Техническая ошибка обработки запроса"],
-            warnings=["unhandled_exception"],
-            debug={"error": str(exc), "latency_sec": round(time.time() - start_t, 3)},
+            missing=[],
+            warnings=["technical_failure:" + type(exc).__name__],
+            debug={"error_type": type(exc).__name__, "latency_sec": round(time.time() - start_t, 3), "skip_s8": skip_s8},
         )

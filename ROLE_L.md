@@ -11,7 +11,7 @@
 Из корня репозитория:
 
 ```powershell
-python -X utf8 -m unittest discover -s tests -v
+python -X utf8 -m unittest tests.test_answer tests.test_guard tests.test_config tests.test_demo_scenarios -v
 python -X utf8 -m examples.offline_demo
 ```
 
@@ -77,6 +77,13 @@ R передаёт:
 Без callback сущности остаются пустыми. S1 может дать проверяемые подсказки дат; месяц/год остаётся диапазоном, точный день не выдумывается. При сбое S1 `rewritten = last_user`; callbacks R продолжают работать. Реплики ассистента помогают раскрыть контекст, но не становятся доказательством фактов и дат события.
 
 B получает `AnswerResult(text, status, query_type, claims, missing, warnings, debug)`. Статусы: `answered`, `partial`, `refused`, `out_of_scope`. Каждый итоговый `claim` содержит `text`, `doc_id`, `chunk_id`, `doc_title`, `locator`, `quote`. Служебный JSON не выводится в `text`.
+
+В объединённом проекте эти вызовы уже подключены в `pipeline.answer_question()`:
+используется HTTP-клиент B, дата R адаптируется к списку подсказок L, карантин
+передаётся через `RetrievalResult.quarantine`. Общие типы имеют `to_dict()` для
+воркера. Номера договоров не используются как даты события; совпадающие номера
+вложенных фрагментов получают уникальные устойчивые идентификаторы. Режим
+предзаданных ответов B включается только явно через `DEMO_MODE=true`.
 
 ### Расхождение существующего HTTP-контракта и плана
 

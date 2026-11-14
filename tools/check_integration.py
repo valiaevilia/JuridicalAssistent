@@ -14,8 +14,10 @@
 from __future__ import annotations
 
 import importlib
+import argparse
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +93,7 @@ def check_role_l() -> dict[str, str]:
     return status
 
 
-def run_e2e_diagnostic() -> bool:
+def run_e2e_diagnostic(*, offline: bool = False) -> bool:
     print_header("3. Сквозной E2E-тест пайплайна (pipeline.answer_question)")
     from pipeline import answer_question, ensure_kb_initialized
 
@@ -108,7 +110,28 @@ def run_e2e_diagnostic() -> bool:
     all_passed = True
     for i, (q, expected_substr, expected_doc) in enumerate(test_queries, 1):
         t0 = time.time()
-        res = answer_question(q)
+        kwargs = {}
+        if offline:
+            from config import LConfig
+            from examples.offline_client import ScriptedLLM, query_response, review_ok
+            from guard import build_context
+            from retrieve import retrieve
+            from schemas import QueryInfo
+
+            if expected_doc:
+                retrieval = retrieve(QueryInfo(original=q, last_user=q, rewritten=q))
+                context = build_context(retrieval)
+                locator = "п. 3.1" if expected_doc == "D1" else "п. 5.2"
+                label, chunk = next((label, c) for label, c in context.labels.items()
+                                    if c.doc_id == expected_doc and c.locator == locator)
+                draft = {"status": "answered", "answer": chunk.text,
+                         "claims": [{"text": chunk.text, "chunk": label, "quote": chunk.text}],
+                         "missing": [], "assumptions": [], "calc": []}
+                responses = [query_response(q), draft, review_ok()]
+            else:
+                responses = [query_response(q, query_type="off_topic")]
+            kwargs = {"client": ScriptedLLM(responses), "config": LConfig()}
+        res = answer_question(q, **kwargs)
         lat_ms = int((time.time() - t0) * 1000)
 
         print(f"\n  Тест {i}: \"{q}\"")
@@ -141,20 +164,26 @@ def run_e2e_diagnostic() -> bool:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--offline", action="store_true", help="Предзаданные ответы LLM при настоящих R и L")
+    args = parser.parse_args()
+    if args.offline:
+        import pipeline
+        pipeline.cfg = replace(pipeline.cfg, DEMO_MODE=False)
     print_header("ДИАГНОСТИКА ГОТОВНОСТИ ИНТЕГРАЦИИ (B5 - B/R/L)")
 
     status_r = check_role_r()
     status_l = check_role_l()
-    e2e_ok = run_e2e_diagnostic()
+    e2e_ok = run_e2e_diagnostic(offline=args.offline)
 
     print_header("ИТОГОВЫЙ СТАТУС ГОТОВНОСТИ")
-    r_ready = all("ERROR" not in v for v in status_r.values())
-    l_ready = all("ERROR" not in v for v in status_l.values())
+    r_ready = all(v.startswith("OK") for v in status_r.values())
+    l_ready = all(v == "OK" for v in status_l.values())
 
     if r_ready and l_ready and e2e_ok:
         print("  \u2705 INTEGRATION HEALTH: 100% OK")
-        print("  Ядро полностью готово к бесшовному слиянию веток R (Retrieval) и L (LLM).")
-        print("  Текущий режим: Smart Hybrid Fallback активен и готов к работе.\n")
+        print("  Сквозной путь S1 -> Retrieval -> LLM & Guardrails успешно проверен.")
+        print("  Режим: " + ("offline, ответы модели предзаданы; реальный API не проверялся.\n" if args.offline else "клиент модели из конфигурации.\n"))
         return 0
     else:
         print("  \u274c INTEGRATION ISSUES DETECTED. Проверьте логи выше.\n")

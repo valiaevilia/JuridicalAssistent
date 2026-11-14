@@ -25,7 +25,6 @@ class Chunk:
     prev_id: str | None = None
     next_id: str | None = None
 
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -48,7 +47,6 @@ class QueryInfo:
     warnings: list[str] = field(default_factory=list)
     debug: dict = field(default_factory=dict)
 
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -63,7 +61,6 @@ class RetrievalResult:
     # R передаёт kb.quarantine явно; эти тексты никогда не идут в промпт.
     quarantine: list[str] = field(default_factory=list)
 
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -77,7 +74,6 @@ class AnswerResult:
     missing: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     debug: dict = field(default_factory=dict)
-
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

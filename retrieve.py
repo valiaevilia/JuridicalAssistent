@@ -18,7 +18,7 @@ from typing import Any
 from dates import extract_dates
 from index import KBIndex
 from kb_load import load_meta, load_raw_docs
-from kb_parse import parse_all_documents
+from kb_parse import parse_all_documents, unique_chunk_ids
 from schemas import Chunk, QueryInfo, RetrievalResult
 
 logger = logging.getLogger("retrieve")
@@ -46,6 +46,7 @@ def get_global_index() -> tuple[KBIndex, list[Chunk], dict[str, Any]]:
         raw_docs = load_raw_docs()
         chunks = parse_all_documents(raw_docs)
 
+    chunks = unique_chunk_ids(chunks)
     index = KBIndex(chunks)
     _GLOBAL_INDEX = index
     _GLOBAL_CHUNKS = chunks
@@ -290,8 +291,9 @@ def retrieve(qinfo: QueryInfo) -> RetrievalResult:
     text_to_search = qinfo.rewritten or qinfo.last_user or qinfo.original
 
     # 1. Извлечение даты события
-    date_res = extract_dates(text_to_search)
-    as_of = qinfo.as_of or date_res.as_of
+    date_text = re.sub(r"\b[А-ЯA-Z]{1,3}-\d{1,4}/\d{4}\b", "", text_to_search, flags=re.I)
+    date_res = extract_dates(date_text)
+    as_of = qinfo.as_of or (qinfo.as_of_range[0] if qinfo.as_of_range else date_res.as_of)
 
     # 2. Определение сущностей
     entities = detect_entities(text_to_search)
@@ -384,4 +386,6 @@ def retrieve(qinfo: QueryInfo) -> RetrievalResult:
         as_of=as_of,
         editions_used=editions_used,
         warnings=warnings,
+        # Парсер хранит исходные команды в notes изолированных чанков.
+        quarantine=[note for c in all_chunks if c.quarantined for note in c.notes],
     )
