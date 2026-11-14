@@ -128,6 +128,29 @@ def test_retrieve_smoke_on_dataset():
     print(f"Dataset recall: {hit_count}/{len(dataset)} questions covered!")
 
 
+def test_synonyms_stress():
+    cases = [
+        ("Предусмотрен ли аванс по договору поставки ПТ-05/2023?", "D3", "п. 4.2"),
+        ("Можно ли внести аванс по договору поставки оборудования?", "D3", "п. 4.2"),
+        ("Можем ли мы попасть на склад в два часа ночи по договору А-08?", "D1", "п. 4.3"),
+        ("Разрешен ли доступ на арендуемый склад в два часа ночи?", "D1", "п. 4.3"),
+        ("Как правильно сдать ключи при освобождении помещения по договору А-08?", "D1", "п. 6.3"),
+        ("Как арендатору сдать ключи при прекращении аренды склада?", "D1", "п. 6.3"),
+        ("Что делать, если поставлена мебель с дефектами по договору П-17?", "D2", "п. 6.2"),
+        ("Что делать покупателю, если при приемке выявлена мебель с дефектами?", "D2", "п. 6.2"),
+    ]
+    for q, exp_doc, exp_loc in cases:
+        res = retrieve(QueryInfo(original=q, last_user=q))
+        doc_ids = [c.doc_id for c in res.chunks]
+        assert exp_doc in doc_ids, f"Doc {exp_doc} not found for query: '{q}'"
+        locators = [c.locator for c in res.chunks if c.doc_id == exp_doc]
+        assert exp_loc in locators, f"Locator {exp_loc} not found in {exp_doc} for query: '{q}'"
+        for c in res.chunks:
+            assert not c.quarantined, f"Quarantined chunk leaked for query: '{q}'"
+            assert "90 календарных" not in c.text, f"Injection leaked in text for query: '{q}'"
+            assert "90 календарных" not in c.index_text, f"Injection leaked in index_text for query: '{q}'"
+
+
 if __name__ == "__main__":
     test_kb_meta_and_load()
     print("test_kb_meta_and_load OK")
@@ -140,4 +163,7 @@ if __name__ == "__main__":
     test_resolve_editions()
     print("test_resolve_editions OK")
     test_retrieve_smoke_on_dataset()
+    print("test_retrieve_smoke_on_dataset OK")
+    test_synonyms_stress()
+    print("test_synonyms_stress OK")
     print("ALL TESTS PASSED!")
